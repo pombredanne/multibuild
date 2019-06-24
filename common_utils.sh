@@ -323,7 +323,9 @@ function install_wheel {
     #     MANYLINUX_URL (optional, default "") (via pip_opts function)
     local wheelhouse=$(abspath ${WHEEL_SDIR:-wheelhouse})
     if [ -n "$TEST_DEPENDS" ]; then
-        pip install $(pip_opts) $@ $TEST_DEPENDS
+        while read TEST_DEPENDENCY; do
+            pip install $(pip_opts) $@ $TEST_DEPENDENCY
+        done <<< "$TEST_DEPENDS"
     fi
     # Install compatible wheel
     pip install $(pip_opts) $@ \
@@ -357,7 +359,7 @@ function fill_submodule {
 
 PYPY_URL=https://bitbucket.org/pypy/pypy/downloads
 
-# As of 2018-04-25, the latest verions of PyPy.
+# As of 2019-03-25, the latest verions of PyPy.
 LATEST_PP_4p0=4.0.1
 LATEST_PP_4=$LATEST_PP_4p0
 
@@ -369,11 +371,14 @@ LATEST_PP_5p6=5.6.0
 LATEST_PP_5p7=5.7.1
 LATEST_PP_5p8=5.8.0
 LATEST_PP_5p9=5.9.0
-LATEST_PP_5p10=5.10.1
-LATEST_PP_5=$LATEST_PP_5p10
+LATEST_PP_5=$LATEST_PP_5p9
 
 LATEST_PP_6p0=6.0.0
 LATEST_PP_6=$LATEST_PP_6p0
+
+LATEST_PP_7p0=7.0.0
+LATEST_PP_7p1=7.1.0
+LATEST_PP_7=$LATEST_PP_7p1
 
 function unroll_version {
     # Convert major or major.minor format to major.minor.micro using the above
@@ -411,7 +416,9 @@ function get_pypy_build_prefix {
     if [[ $version =~ ([0-9]+)\.([0-9]+) ]]; then
         local major=${BASH_REMATCH[1]}
         local minor=${BASH_REMATCH[2]}
-        if (( $major > 5 || ($major == 5 && $minor >= 3) )); then
+        if (( $major > 6 )); then
+            echo "pypy2.7-v"
+        elif (( $major > 5 || ($major == 5 && $minor >= 3) )); then
             echo "pypy2-v"
         else
             echo "pypy-"

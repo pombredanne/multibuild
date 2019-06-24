@@ -14,8 +14,6 @@ OPENBLAS_VERSION="${OPENBLAS_VERSION:-0.2.18}"
 ZLIB_VERSION="${ZLIB_VERSION:-1.2.10}"
 LIBPNG_VERSION="${LIBPNG_VERSION:-1.6.21}"
 BZIP2_VERSION="${BZIP2_VERSION:-1.0.6}"
-# BZIP website went down as of August 8 2018
-BZIP_URL=https://web.archive.org/web/20180624184806/http://bzip.org
 FREETYPE_VERSION="${FREETYPE_VERSION:-2.6.3}"
 TIFF_VERSION="${TIFF_VERSION:-4.0.6}"
 JPEG_VERSION="${JPEG_VERSION:-9b}"
@@ -26,7 +24,7 @@ LIBWEBP_VERSION="${LIBWEBP_VERSION:-0.5.0}"
 XZ_VERSION="${XZ_VERSION:-5.2.2}"
 LIBYAML_VERSION="${LIBYAML_VERSION:-0.1.5}"
 SZIP_VERSION="${SZIP_VERSION:-2.1.1}"
-HDF5_VERSION="${HDF5_VERSION:-1.10.2}"
+HDF5_VERSION="${HDF5_VERSION:-1.10.4}"
 LIBAEC_VERSION="${LIBAEC_VERSION:-0.3.3}"
 LZO_VERSION=${LZO_VERSION:-2.10}
 LZF_VERSION="${LZF_VERSION:-3.6}"
@@ -43,9 +41,9 @@ FLEX_VERSION=${FLEX_VERSION:-2.6.4}
 BISON_VERSION=${BISON_VERSION:-3.0.4}
 FFTW_VERSION=${FFTW_VERSION:-3.3.7}
 CFITSIO_VERSION=${CFITSIO_VERSION:-3370}
-OPENSSL_ROOT=openssl-1.0.2l
+OPENSSL_ROOT=openssl-1.0.2r
 # Hash from https://www.openssl.org/source/openssl-1.0.2?.tar.gz.sha256
-OPENSSL_HASH=ce07195b659e75f4e1db43552860070061f156a98bb37b672b101ba6e3ddf30c
+OPENSSL_HASH=ae51d08bba8a83958e894946f15303ff894d75c2b8bbd44a852b64e3fe11d0d6
 OPENSSL_DOWNLOAD_URL=https://www.openssl.org/source
 
 
@@ -139,7 +137,7 @@ function build_libpng {
 function build_bzip2 {
     if [ -n "$IS_OSX" ]; then return; fi  # OSX has bzip2 libs already
     if [ -e bzip2-stamp ]; then return; fi
-    fetch_unpack $BZIP_URL/${BZIP2_VERSION}/bzip2-${BZIP2_VERSION}.tar.gz
+    fetch_unpack https://download.sourceforge.net/bzip2/bzip2-${BZIP2_VERSION}.tar.gz
     (cd bzip2-${BZIP2_VERSION} \
         && make -f Makefile-libbz2_so \
         && make install PREFIX=$BUILD_PREFIX)
