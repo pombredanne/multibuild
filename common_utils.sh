@@ -12,6 +12,16 @@ COMMON_UTILS_SOURCED=1
 set -e
 
 MULTIBUILD_DIR=$(dirname "${BASH_SOURCE[0]}")
+DOWNLOADS_SDIR=downloads
+PYPY_URL=https://bitbucket.org/pypy/pypy/downloads
+GET_PIP_URL=https://bootstrap.pypa.io/get-pip.py
+
+# Unicode width, default 32. Used here and in travis_linux_steps.sh
+# In docker_build_wrap.sh it is passed in when calling "docker run"
+# The docker test images also use it when choosing the python to run
+# with, so it is passed in when calling "docker run" for tests.
+UNICODE_WIDTH=${UNICODE_WIDTH:-32}
+
 if [ $(uname) == "Darwin" ]; then IS_OSX=1; fi
 
 # Work round bug in travis xcode image described at
@@ -45,7 +55,7 @@ function stop_spinner {
     if [ ! -n "$MB_SPINNER_PID" ]; then
         return
     fi
-    
+
     kill $MB_SPINNER_PID
     unset MB_SPINNER_PID
 
@@ -53,15 +63,18 @@ function stop_spinner {
 }
 
 function abspath {
+    # Can work with any Python; need not be our installed Python.
     python -c "import os.path; print(os.path.abspath('$1'))"
 }
 
 function relpath {
     # Path of first input relative to second (or $PWD if not specified)
+    # Can work with any Python; need not be our installed Python.
     python -c "import os.path; print(os.path.relpath('$1','${2:-$PWD}'))"
 }
 
 function realpath {
+    # Can work with any Python; need not be our installed Python.
     python -c "import os; print(os.path.realpath('$1'))"
 }
 
@@ -91,14 +104,18 @@ function is_function {
     (set +e; $(declare -Ff "$1" > /dev/null) && echo true)
 }
 
-function gh-clone {
+function gh_clone {
     git clone https://github.com/$1
 }
+
+# gh-clone was renamed to gh_clone, so we have this alias for
+# backwards compatibility.
+alias gh-clone=gh_clone
 
 function set_opts {
     # Set options from input options string (in $- format).
     local opts=$1
-    local chars="exhimBH"
+    local chars="exhmBH"
     for (( i=0; i<${#chars}; i++ )); do
         char=${chars:$i:1}
         [ -n "${opts//[^${char}]/}" ] && set -$char || set +$char
@@ -113,13 +130,14 @@ function suppress {
     # Set -e stuff agonized over in
     # https://unix.stackexchange.com/questions/296526/set-e-in-a-subshell
     local tmp=$(mktemp tmp.XXXXXXXXX) || return
-    local opts=$-
+    local errexit_set
     echo "Running $@"
+    if [[ $- = *e* ]]; then errexit_set=true; fi
     set +e
-    ( set_opts $opts ; $@  > "$tmp" 2>&1 ) ; ret=$?
+    ( if [[ -n $errexit_set ]]; then set -e; fi; "$@"  > "$tmp" 2>&1 ) ; ret=$?
     [ "$ret" -eq 0 ] || cat "$tmp"
     rm -f "$tmp"
-    set_opts $opts
+    if [[ -n $errexit_set ]]; then set -e; fi
     return "$ret"
 }
 
@@ -147,7 +165,7 @@ function untar {
 
 function install_rsync {
     if [ -z "$IS_OSX" ]; then
-        [[ $(type -P rsync) ]] || yum install -y rsync
+        [[ $(type -P rsync) ]] || yum_install rsync
     fi
 }
 
@@ -247,7 +265,8 @@ function bdist_wheel_cmd {
     # fixed with bdist_wheel:
     # https://github.com/warner/python-versioneer/issues/121
     local abs_wheelhouse=$1
-    python setup.py bdist_wheel
+    check_python
+    $PYTHON_EXE setup.py bdist_wheel
     cp dist/*.whl $abs_wheelhouse
 }
 
@@ -303,13 +322,18 @@ function pip_opts {
 
 function get_platform {
     # Report platform as given by uname
+    # Use any Python that comes to hand.
     python -c 'import platform; print(platform.uname()[4])'
 }
+
+if [ "$(get_platform)" == x86_64 ] || \
+    [ "$(get_platform)" == i686 ]; then IS_X86=1; fi
 
 function get_distutils_platform {
     # Report platform as given by distutils get_platform.
     # This is the platform tag that pip will use.
-    python -c "import distutils.util; print(distutils.util.get_platform())"
+    check_python
+    $PYTHON_EXE -c "import distutils.util; print(distutils.util.get_platform())"
 }
 
 function install_wheel {
@@ -322,14 +346,24 @@ function install_wheel {
     #     TEST_DEPENDS  (optional, default "")
     #     MANYLINUX_URL (optional, default "") (via pip_opts function)
     local wheelhouse=$(abspath ${WHEEL_SDIR:-wheelhouse})
+    check_pip
     if [ -n "$TEST_DEPENDS" ]; then
         while read TEST_DEPENDENCY; do
-            pip install $(pip_opts) $@ $TEST_DEPENDENCY
+            $PIP_CMD install $(pip_opts) $@ $TEST_DEPENDENCY
         done <<< "$TEST_DEPENDS"
     fi
+
+    check_python
+    check_pip
+
+    $PIP_CMD install packaging
+    local supported_wheels=$($PYTHON_EXE $MULTIBUILD_DIR/supported_wheels.py $wheelhouse/*.whl)
+    if [ -z "$supported_wheels" ]; then
+        echo "ERROR: no supported wheels found"
+        exit 1
+    fi
     # Install compatible wheel
-    pip install $(pip_opts) $@ \
-        $(python $MULTIBUILD_DIR/supported_wheels.py $wheelhouse/*.whl)
+    $PIP_CMD install $(pip_opts) $@ $supported_wheels
 }
 
 function install_run {
@@ -337,6 +371,7 @@ function install_run {
     install_wheel
     mkdir tmp_for_test
     (cd tmp_for_test && run_tests)
+    rmdir tmp_for_test  2>/dev/null || echo "Cannot remove tmp_for_test"
 }
 
 function fill_submodule {
@@ -357,12 +392,7 @@ function fill_submodule {
     (cd "$repo_dir" && git remote set-url origin $origin_url)
 }
 
-PYPY_URL=https://bitbucket.org/pypy/pypy/downloads
-
-# As of 2019-03-25, the latest verions of PyPy.
-LATEST_PP_4p0=4.0.1
-LATEST_PP_4=$LATEST_PP_4p0
-
+# As of 2020-04-14, the latest verions of PyPy.
 LATEST_PP_5p0=5.0.1
 LATEST_PP_5p1=5.1.1
 LATEST_PP_5p3=5.3.1
@@ -377,8 +407,10 @@ LATEST_PP_6p0=6.0.0
 LATEST_PP_6=$LATEST_PP_6p0
 
 LATEST_PP_7p0=7.0.0
-LATEST_PP_7p1=7.1.0
-LATEST_PP_7=$LATEST_PP_7p1
+LATEST_PP_7p1=7.1.1
+LATEST_PP_7p2=7.2.0
+LATEST_PP_7p3=7.3.1
+LATEST_PP_7=$LATEST_PP_7p3
 
 function unroll_version {
     # Convert major or major.minor format to major.minor.micro using the above
@@ -399,6 +431,54 @@ function unroll_version {
     fi
 }
 
+function install_pypy {
+    # Installs pypy.org PyPy
+    # Parameter $version
+    # Version given in major or major.minor or major.minor.micro e.g
+    # "3" or "3.7" or "3.7.1".
+    # Uses $PLAT
+    # sets $PYTHON_EXE variable to python executable
+
+    local version=$1
+    case "$PLAT" in
+    "x86_64")  if [ -n "$IS_OSX" ]; then
+                   suffix="osx64";
+               else
+                   suffix="linux64";
+               fi;;
+    "i686")    suffix="linux32";;
+    "ppc64le") suffix="ppc64le";;
+    "s390x")    suffix="s390x";;
+    "aarch64")  suffix="aarch64";;
+    *) echo unknown platform "$PLAT"; exit 1;;
+    esac
+
+    # Need to convert pypy-7.2 to pypy2.7-v7.2.0 and pypy3.6-7.3 to pypy3.6-v7.3.0
+    local prefix=$(get_pypy_build_prefix $version)
+    # since prefix is pypy3.6v7.2 or pypy2.7v7.2, grab the 4th (0-index) letter
+    local major=${prefix:4:1}
+    # get the pypy version 7.2.0
+    local py_version=$(fill_pypy_ver $(echo $version | cut -f2 -d-))
+
+    local py_build=$prefix$py_version-$suffix
+    local py_zip=$py_build.tar.bz2
+    local zip_path=$DOWNLOADS_SDIR/$py_zip
+    mkdir -p $DOWNLOADS_SDIR
+    wget -nv $PYPY_URL/${py_zip} -P $DOWNLOADS_SDIR
+    untar $zip_path
+    # bug/feature: pypy package for pypy3 only has bin/pypy3 :(
+    if [ "$major" == "3" ] && [ ! -x "$py_build/bin/pypy" ]; then
+        ln $py_build/bin/pypy3 $py_build/bin/pypy
+    fi
+    PYTHON_EXE=$(realpath $py_build/bin/pypy)
+    $PYTHON_EXE -mensurepip
+    $PYTHON_EXE -mpip install --upgrade pip setuptools wheel
+    if [ "$major" == "3" ] && [ ! -x "$py_build/bin/pip" ]; then
+        ln $py_build/bin/pip3 $py_build/bin/pip
+    fi
+    PIP_CMD=pip
+}
+
 function fill_pypy_ver {
     # Convert major or major.minor format to major.minor.micro
     # Parameters:
@@ -411,9 +491,13 @@ function fill_pypy_ver {
 function get_pypy_build_prefix {
     # Return the file prefix of a PyPy file
     # Parameters:
-    #   $version : pypy2 version number
+    #   $version : pypy version number, for example pypy-7.2 or pypy3.6-7.2
     local version=$1
-    if [[ $version =~ ([0-9]+)\.([0-9]+) ]]; then
+    if [[ $version =~ pypy([0-9]+)\.([0-9]+)-([0-9]+)\.([0-9]+) ]]; then
+        local py_major=${BASH_REMATCH[1]}
+        local py_minor=${BASH_REMATCH[2]}
+        echo "pypy$py_major.$py_minor-v"
+    elif [[ $version =~ ([0-9]+)\.([0-9]+) ]]; then
         local major=${BASH_REMATCH[1]}
         local minor=${BASH_REMATCH[2]}
         if (( $major > 6 )); then
@@ -424,7 +508,7 @@ function get_pypy_build_prefix {
             echo "pypy-"
         fi
     else
-        echo "error: expected version number, got $1" 1>&2
+        echo "error: expected version like pypy-7.2 or pypy3.6-7.2, got $1" 1>&2
         exit 1
     fi
 }
@@ -445,4 +529,79 @@ retry () {
         return 1
     }
     return 0
+}
+
+function install_pip {
+    # Generic install pip
+    # Gets needed version from version implied by $PYTHON_EXE
+    # Installs pip into python given by $PYTHON_EXE
+    # Assumes pip will be installed into same directory as $PYTHON_EXE
+    check_python
+    mkdir -p $DOWNLOADS_SDIR
+    local py_mm=`get_py_mm`
+    local get_pip_path=$DOWNLOADS_SDIR/get-pip.py
+    curl $GET_PIP_URL > $get_pip_path
+    # Travis VMS now install pip for system python by default - force install
+    # even if installed already.
+    $PYTHON_EXE $get_pip_path --ignore-installed $pip_args
+    PIP_CMD=$(dirname $PYTHON_EXE)/pip$py_mm
+    if [ "$USER" != "root" ]; then
+        # inside a docker, there is no sudo but the user is already root
+        PIP_CMD="sudo $PIP_CMD"
+    fi
+    # Append pip_args if present (avoiding trailing space cf using variable
+    # above).
+    if [ -n "$pip_args" ]; then
+        PIP_CMD="$PIP_CMD $pip_args"
+    fi
+}
+
+function check_python {
+    if [ -z "$PYTHON_EXE" ]; then
+        echo "PYTHON_EXE variable not defined"
+        exit 1
+    fi
+}
+
+function check_pip {
+    if [ -z "$PIP_CMD" ]; then
+        echo "PIP_CMD variable not defined"
+        exit 1
+    fi
+}
+
+function get_py_mm {
+    check_python
+    $PYTHON_EXE -c "import sys; print('{0}.{1}'.format(*sys.version_info[0:2]))"
+}
+
+function cpython_path {
+    # Return path to cpython given
+    # * version (of form "2.7")
+    # * u_width ("16" or "32" default "32")
+    #
+    # For back-compatibility "u" as u_width also means "32"
+    local py_ver="${1:-2.7}"
+    local abi_suff=m
+    local u_width="${2:-${UNICODE_WIDTH}}"
+    local u_suff=u
+    # Python 3.8 and up no longer uses the PYMALLOC 'm' suffix
+    # https://github.com/pypa/wheel/pull/303
+    if [ $(lex_ver $py_ver) -ge $(lex_ver 3.8) ]; then
+        abi_suff=""
+    fi
+    # Back-compatibility
+    if [ "$u_width" == "u" ]; then u_width=32; fi
+    # For Python >= 3.4, "u" suffix not meaningful
+    if [ $(lex_ver $py_ver) -ge $(lex_ver 3.4) ] ||
+        [ "$u_width" == "16" ]; then
+        u_suff=""
+    elif [ "$u_width" == "" ]; then
+        u_width="32"
+    elif [ "$u_width" != "32" ]; then
+        echo "Incorrect u_width value $u_width"
+        exit 1
+    fi
+    local no_dots=$(echo $py_ver | tr -d .)
+    echo "/opt/python/cp${no_dots}-cp${no_dots}$abi_suff${u_suff}"
 }

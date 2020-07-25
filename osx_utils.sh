@@ -8,20 +8,17 @@ source $MULTIBUILD_DIR/common_utils.sh
 
 MACPYTHON_URL=https://www.python.org/ftp/python
 MACPYTHON_PY_PREFIX=/Library/Frameworks/Python.framework/Versions
-MACPYTHON_DEFAULT_OSX="10.6"
-MB_PYTHON_OSX_VER=${MB_PYTHON_OSX_VER:-$MACPYTHON_DEFAULT_OSX}
 GET_PIP_URL=https://bootstrap.pypa.io/get-pip.py
-DOWNLOADS_SDIR=downloads
 WORKING_SDIR=working
 
-# As of 30 March 2019 - latest Python of each version with binary download
+# As of 14 July 2020 - latest Python of each version with binary download
 # available.
 # See: https://www.python.org/downloads/mac-osx/
-LATEST_2p7=2.7.16
-LATEST_3p4=3.4.4
+LATEST_2p7=2.7.17
 LATEST_3p5=3.5.4
 LATEST_3p6=3.6.8
-LATEST_3p7=3.7.3
+LATEST_3p7=3.7.8
+LATEST_3p8=3.8.4
 
 
 function check_python {
@@ -78,18 +75,48 @@ function fill_pyver {
         echo $ver
     elif [ $ver == 2 ] || [ $ver == "2.7" ]; then
         echo $LATEST_2p7
-    elif [ $ver == 3 ] || [ $ver == "3.7" ]; then
+    elif [ $ver == 3 ] || [ $ver == "3.8" ]; then
+        echo $LATEST_3p8
+    elif [ $ver == "3.7" ]; then
         echo $LATEST_3p7
     elif [ $ver == "3.6" ]; then
         echo $LATEST_3p6
     elif [ $ver == "3.5" ]; then
         echo $LATEST_3p5
-    elif [ $ver == "3.4" ]; then
-        echo $LATEST_3p4
     else
         echo "Can't fill version $ver" 1>&2
         exit 1
     fi
+}
+
+function macpython_sdk_list_for_version {
+    # return a list of SDK targets supported for a given CPython version
+    # Parameters
+    #   $py_version (python version in major.minor.extra format)
+    # eg
+    #  macpython_sdks_for_version 2.7.15
+    #  >> 10.6 10.9
+    local _ver=$(fill_pyver $1)
+    local _major=${_ver%%.*}
+    local _return
+
+    if [ "$_major" -eq "2" ]; then
+        _return="10.6"
+        [ $(lex_ver $_ver) -ge $(lex_ver 2.7.15) ] && _return="$_return 10.9"
+    elif [ "$_major" -eq "3" ]; then
+        [ $(lex_ver $_ver) -lt $(lex_ver 3.8)    ] && _return="10.6"
+        [ $(lex_ver $_ver) -ge $(lex_ver 3.6.5)  ] && _return="$_return 10.9"
+    else
+        echo "Error version=${_ver}, expecting 2.x or 3.x" 1>&2
+        exit 1
+    fi
+    echo $_return
+}
+
+function macpython_sdk_for_version {
+    # assumes the output of macpython_sdk_list_for_version is a list
+    # of SDK versions XX.Y in sorted order, eg "10.6 10.9" or "10.9"
+    echo $(macpython_sdk_list_for_version $1) | awk -F' ' '{print $NF}'
 }
 
 function pyinst_ext_for_version {
@@ -109,11 +136,7 @@ function pyinst_ext_for_version {
             echo "dmg"
         fi
     elif [ $py_0 -ge 3 ]; then
-        if [ "$(lex_ver $py_version)" -ge "$(lex_ver 3.4.2)" ]; then
-            echo "pkg"
-        else
-            echo "dmg"
-        fi
+		echo "pkg"
     fi
 }
 
@@ -123,13 +146,11 @@ function pyinst_fname_for_version {
     # Parameters
     #   $py_version (Python version in major.minor.extra format)
     #   $py_osx_ver: {major.minor | not defined}
-    #       if defined, the macOS version that Python is built for, e.g.
-    #       "10.6" or "10.9", if not defined, uses the default
-    #       MACPYTHON_DEFAULT_OSX
-    #       Note: this is the version the Python is built for, and hence
-    #       the min version supported, NOT the version of the current system
+    #       if defined, the minimum macOS SDK version that Python is
+    #       built for, eg: "10.6" or "10.9", if not defined, infers
+    #       this from $py_version using macpython_sdk_for_version
     local py_version=$1
-    local py_osx_ver=${2:-$MACPYTHON_DEFAULT_OSX}
+    local py_osx_ver=${2:-$(macpython_sdk_for_version $py_version)}
     local inst_ext=$(pyinst_ext_for_version $py_version)
     echo "python-${py_version}-macosx${py_osx_ver}.${inst_ext}"
 }
@@ -204,7 +225,7 @@ function macpython_impl_for_version {
     #         "pypy-5.4" for PyPy
     local version=$1
     check_var $1
-    if [[ "$version" =~ pypy-([0-9\.]+) ]]; then
+    if [[ "$version" =~ ^pypy ]]; then
         echo pp
     elif [[ "$version" =~ ([0-9\.]+) ]]; then
         echo cp
@@ -232,17 +253,17 @@ function install_macpython {
     # Install Python and set $PYTHON_EXE to the installed executable
     # Parameters:
     #     $version : [implementation-]major[.minor[.patch]]
-    #         The Python implementation to install, e.g. "3.6" or "pypy-5.4"
+    #         The Python implementation to install, e.g. "3.6", "pypy-5.4" or "pypy3.6-7.2"
     #     $py_osx_ver: {major.minor | not defined}
     #       if defined, the macOS version that CPython is built for, e.g.
     #       "10.6" or "10.9". Ignored for PyPy
     local version=$1
     local py_osx_ver=$2
     local impl=$(macpython_impl_for_version $version)
-    local stripped_ver=$(strip_macpython_ver_prefix $version)
     if [[ "$impl" == "pp" ]]; then
-        install_mac_pypy $stripped_ver
+        install_pypy $version
     elif [[ "$impl" == "cp" ]]; then
+        local stripped_ver=$(strip_macpython_ver_prefix $version)
         install_mac_cpython $stripped_ver $py_osx_ver
     else
         echo "Unexpected Python impl: ${impl}"
@@ -255,7 +276,7 @@ function install_mac_cpython {
     # Parameters
     #   $py_version
     #       Version given in major or major.minor or major.minor.micro e.g
-    #       "3" or "3.4" or "3.4.1".
+    #       "3" or "3.7" or "3.7.1".
     #   $py_osx_ver
     #       {major.minor | not defined}
     #       if defined, the macOS version that Python is built for, e.g.
@@ -279,43 +300,6 @@ function install_mac_cpython {
     local inst_cmd="/Applications/Python ${py_mm}/Install Certificates.command"
     if [ -e "$inst_cmd" ]; then
         sh "$inst_cmd"
-    fi
-}
-
-function install_mac_pypy {
-    # Installs pypy.org PyPy
-    # Parameter $version
-    # Version given in major or major.minor or major.minor.micro e.g
-    # "3" or "3.4" or "3.4.1".
-    # sets $PYTHON_EXE variable to python executable
-    local py_version=$(fill_pypy_ver $1)
-    local py_build=$(get_pypy_build_prefix $py_version)$py_version-osx64
-    local py_zip=$py_build.tar.bz2
-    local zip_path=$DOWNLOADS_SDIR/$py_zip
-    mkdir -p $DOWNLOADS_SDIR
-    wget -nv $PYPY_URL/${py_zip} -P $DOWNLOADS_SDIR
-    untar $zip_path
-    PYTHON_EXE=$(realpath $py_build/bin/pypy)
-}
-
-function install_pip {
-    # Generic install pip
-    # Gets needed version from version implied by $PYTHON_EXE
-    # Installs pip into python given by $PYTHON_EXE
-    # Assumes pip will be installed into same directory as $PYTHON_EXE
-    check_python
-    mkdir -p $DOWNLOADS_SDIR
-    local py_mm=`get_py_mm`
-    local get_pip_path=$DOWNLOADS_SDIR/get-pip.py
-    curl $GET_PIP_URL > $get_pip_path
-    # Travis VMS now install pip for system python by default - force install
-    # even if installed already.
-    sudo $PYTHON_EXE $get_pip_path --ignore-installed $pip_args
-    PIP_CMD="sudo $(dirname $PYTHON_EXE)/pip$py_mm"
-    # Append pip_args if present (avoiding trailing space cf using variable
-    # above).
-    if [ -n "$pip_args" ]; then
-        PIP_CMD="$PIP_CMD $pip_args"
     fi
 }
 
@@ -412,22 +396,6 @@ function repair_wheelhouse {
     local wheelhouse=$1
     install_delocate
     delocate-wheel $wheelhouse/*.whl # copies library dependencies into wheel
-    # Add platform tags to label wheels as compatible with OSX 10.9 and
-    # 10.10.  The wheels are built against Python.org Python, and so will
-    # in fact be compatible with either 10.6+ or 10.9+, depending on the value
-    # of MB_PYTHON_OSX_VER. pip < 6.0 doesn't realize this, so, in case users
-    # try to install have older pip, add platform tags to specify compatibility
-    # with later OSX. Not necessary for OSX released well after pip 6.0.  See:
-    # https://github.com/MacPython/wiki/wiki/Spinning-wheels#question-will-pip-give-me-a-broken-wheel
-    local MAC_ARCH=$(get_macpython_arch)
-    if [[ "$MAC_ARCH" == "x86_64" ]]; then
-        delocate-addplat --rm-orig -p macosx_10_10_x86_64 $wheelhouse/*.whl
-    elif [[ "$MAC_ARCH" == "intel" ]]; then
-        delocate-addplat --rm-orig -x 10_9 -x 10_10 $wheelhouse/*.whl
-    else
-        echo "Unexpected ARCH='$MAC_ARCH', supported values are 'x86_64' and 'intel'"
-        exit 1
-    fi
 }
 
 function install_pkg_config {

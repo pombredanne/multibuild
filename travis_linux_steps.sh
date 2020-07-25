@@ -11,7 +11,10 @@
 #  install_run
 set -e
 
-MANYLINUX_URL=${MANYLINUX_URL:-https://5cf40426d9f06eb7461d-6fe47d9331aba7cd62fc36c7196769e4.ssl.cf2.rackcdn.com}
+# Default Manylinux version
+# Warning: ignored if DOCKER_IMAGE variable is set.
+# See build_multilinux function.
+MB_ML_VER=${MB_ML_VER:-1}
 
 # Get our own location on this filesystem
 MULTIBUILD_DIR=$(dirname "${BASH_SOURCE[0]}")
@@ -21,7 +24,7 @@ MB_PYTHON_VERSION=${MB_PYTHON_VERSION:-$TRAVIS_PYTHON_VERSION}
 
 function before_install {
     # Install a virtualenv to work in.
-    virtualenv --python=python venv
+    virtualenv --python=$PYTHON_EXE venv
     source venv/bin/activate
     python --version # just to check
     pip install --upgrade pip wheel
@@ -43,7 +46,7 @@ function build_wheel {
     #     WHEEL_SDIR (optional)
     local repo_dir=${1:-$REPO_DIR}
     [ -z "$repo_dir" ] && echo "repo_dir not defined" && exit 1
-    local plat=${2:-$PLAT}
+    local plat=${2:-${PLAT:-x86_64}}
     build_multilinux $plat "build_wheel $repo_dir"
 }
 
@@ -61,7 +64,7 @@ function build_index_wheel {
     #     WHEEL_SDIR (optional)
     local project_spec=$1
     [ -z "$project_spec" ] && echo "project_spec not defined" && exit 1
-    local plat=${2:-$PLAT}
+    local plat=${2:-${PLAT:-x86_64}}
     build_multilinux $plat "build_index_wheel $project_spec"
 }
 
@@ -70,20 +73,22 @@ function build_multilinux {
     #
     # Depends on
     #     MB_PYTHON_VERSION
+    #     MB_ML_VER
     #     UNICODE_WIDTH (optional)
     #     BUILD_DEPENDS (optional)
-    #     DOCKER_IMAGE (optional)  
+    #     DOCKER_IMAGE (optional)
     #     MANYLINUX_URL (optional)
     #     WHEEL_SDIR (optional)
     local plat=$1
     [ -z "$plat" ] && echo "plat not defined" && exit 1
     local build_cmds="$2"
-    local docker_image=${DOCKER_IMAGE:-quay.io/pypa/manylinux1_\$plat}
+    local docker_image=${DOCKER_IMAGE:-quay.io/pypa/manylinux${MB_ML_VER}_\$plat}
     docker_image=$(eval echo "$docker_image")
     retry docker pull $docker_image
     docker run --rm \
         -e BUILD_COMMANDS="$build_cmds" \
         -e PYTHON_VERSION="$MB_PYTHON_VERSION" \
+        -e MB_PYTHON_VERSION="$MB_PYTHON_VERSION" \
         -e UNICODE_WIDTH="$UNICODE_WIDTH" \
         -e BUILD_COMMIT="$BUILD_COMMIT" \
         -e CONFIG_PATH="$CONFIG_PATH" \
@@ -94,6 +99,7 @@ function build_multilinux {
         -e USE_CCACHE="$USE_CCACHE" \
         -e REPO_DIR="$repo_dir" \
         -e PLAT="$PLAT" \
+        -e MB_ML_VER="$MB_ML_VER" \
         -v $PWD:/io \
         -v $HOME:/parent-home \
         $docker_image /io/$MULTIBUILD_DIR/docker_build_wrap.sh
@@ -111,9 +117,16 @@ function install_run {
     #  WHEEL_SDIR (optional)
     #  MANYLINUX_URL (optional)
     #  TEST_DEPENDS  (optional)
-    local plat=${1:-$PLAT}
-    bitness=$([ "$plat" == i686 ] && echo 32 || echo 64)
-    local docker_image="matthewbrett/trusty:$bitness"
+    #  MB_TEST_VER (optional)
+    local plat=${1:-${PLAT:-x86_64}}
+    if [ -z "$DOCKER_TEST_IMAGE" ]; then
+        local bitness=$([ "$plat" == i686 ] && echo 32 || echo 64)
+        local docker_image="matthewbrett/trusty:$bitness"
+    else
+        # aarch64 is called arm64v8 in Ubuntu
+        local plat_subst=$([ "$plat" == aarch64 ] && echo arm64v8 || echo $plat)
+        local docker_image="${DOCKER_TEST_IMAGE/\{PLAT\}/$plat_subst}"
+    fi
     docker pull $docker_image
     docker run --rm \
         -e PYTHON_VERSION="$MB_PYTHON_VERSION" \
